@@ -392,7 +392,7 @@ impl MapArea {
 // os/src/mm/memory_set.rs
 pub struct MemorySet {
 	page_table: PageTable,  //页表
-    areas: Vec<MapArea>,    //所有段
+    areas: Vec<MapArea>,    //所有段(不包括trampoiline的所有段)
 }
 
 impl MemorySet {
@@ -447,11 +447,12 @@ impl MemorySet {
 ```rust
 impl MemorySet {  
 	pub fn from_elf(elf_data: &[u8]) -> (Self, usize, usize)
+	// 参数elf_data为数据的地址
 	// 1.let mut memory_set = Self::new_bare()创建新的地址空间
-	// 2.映射trampoline
-	// 3.取出elf文件中的每一个段push到每一个新的MapArea中并写入data同时将map_area放入到地址空间中
-	// 4.映射并生成user stack with U flags
-	// 5.映射并生成TrapContext(之前是切换的时候放到内核栈中的)
+	// 2.映射trampoline(map_trampoline)
+	// 3.取出elf文件中的每一个段push到每一个新的MapArea中并写入data同时将map_area放入到地址空间中(push)
+	// 4.映射并生成user stack with U flags(push)
+	// 5.映射并生成TrapContext(push)(之前是切换时放到内核栈中的)
 }
 ```
 
@@ -640,7 +641,8 @@ pub fn trap_return() -> ! {
 
 ## 5. 内核栈
 
-* 内核栈不仅是每一个用户空间跳转到**内核空间所使用的栈**，而且还保存着**TaskContext**供内核在第一次切换到用户空间或者`__switch()` 切换其他应用时保存着的任务上下文(ra: trap_return as usize)，可以ret**返回到trap_return()** 并执行返回到用户空间代码
+* 内核栈是每一个用户空间跳转到**内核空间所使用的栈**（每个app一个内核栈，对应内核地址的高地址空间）
+* 在TCB创建的时候创建，直接将对应的物理页帧加到内核空间的管理中并映射
 
 ```rust
 // os/src/config.rs
@@ -651,18 +653,6 @@ pub fn kernel_stack_position(app_id: usize) -> (usize, usize) {
     let top = TRAMPOLINE - app_id * (KERNEL_STACK_SIZE + PAGE_SIZE);
     let bottom = top - KERNEL_STACK_SIZE;
     (bottom, top)
-}
-
-// os/src/task/context.rs
-
-impl TaskContext {
-	// 内核中创建TCB时会用到
-    pub fn goto_trap_return() -> Self {
-        Self {
-            ra: trap_return as usize,
-            s: [0; 12],
-        }
-    }
 }
 ```
 
@@ -714,7 +704,7 @@ impl TaskControlBlock {
                 kernel_stack_top.into(),
                 MapPermission::R | MapPermission::W,
             );
-        // 3.创建TCB
+        // 3.创建TCB(里面的TaskContext的返回地址是trap_return)
         let task_control_block = Self {
             task_status,
             task_cx: TaskContext::goto_trap_return(kernel_stack_top),
@@ -732,6 +722,19 @@ impl TaskControlBlock {
             trap_handler as usize,
         );
         task_control_block
+    }
+}
+
+// TCB内的TaskContext
+/// set Task Context{__restore ASM funciton: trap_return, sp: kstack_ptr, s: s_0..12}
+impl TaskContext{
+	// 返回一个TaskContext(其ra为trap_retrun,所以叫这个名字)
+    pub fn goto_trap_return(kstack_ptr: usize) -> Self {
+        Self {
+            ra: trap_return as usize,
+            sp: kstack_ptr,
+            s: [0; 12],
+        }
     }
 }
 ```
